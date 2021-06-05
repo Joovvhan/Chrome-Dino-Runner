@@ -4,6 +4,31 @@ import pygame
 import os
 import threading
 import random
+import queue
+import sys
+
+import cv2
+import numpy as np
+from fer import FER
+
+detector = FER()
+
+cap = cv2.VideoCapture(0)
+
+import sounddevice as sd
+
+q = queue.Queue(maxsize=100)
+
+def audio_callback(indata, frames, time, status):
+    if status:
+        print(status, file=sys.stderr)
+    rms = np.std(indata[::10, 0])
+    if q.full():
+        q.get()
+    else:
+        q.put(rms)
+    # print(q.qsize(), rms)
+
 pygame.init()
 
 # Global Constants
@@ -69,7 +94,7 @@ class Dinosaur:
         self.dino_rect.x = self.X_POS
         self.dino_rect.y = self.Y_POS
 
-    def update(self, userInput):
+    def update(self, customInput):
         if self.dino_duck:
             self.duck()
         if self.dino_run:
@@ -80,15 +105,28 @@ class Dinosaur:
         if self.step_index >= 10:
             self.step_index = 0
 
-        if userInput[pygame.K_UP] and not self.dino_jump:
+        # if userInput[pygame.K_UP] and not self.dino_jump:
+        #     self.dino_duck = False
+        #     self.dino_run = False
+        #     self.dino_jump = True
+        # elif userInput[pygame.K_DOWN] and not self.dino_jump:
+        #     self.dino_duck = True
+        #     self.dino_run = False
+        #     self.dino_jump = False
+        # elif not (self.dino_jump or userInput[pygame.K_DOWN]):
+        #     self.dino_duck = False
+        #     self.dino_run = True
+        #     self.dino_jump = False
+
+        if customInput['Up'] and not self.dino_jump:
             self.dino_duck = False
             self.dino_run = False
             self.dino_jump = True
-        elif userInput[pygame.K_DOWN] and not self.dino_jump:
+        elif customInput['Down'] and not self.dino_jump:
             self.dino_duck = True
             self.dino_run = False
             self.dino_jump = False
-        elif not (self.dino_jump or userInput[pygame.K_DOWN]):
+        elif not (self.dino_jump or customInput['Down']):
             self.dino_duck = False
             self.dino_run = True
             self.dino_jump = False
@@ -129,7 +167,8 @@ class Cloud:
         self.width = self.image.get_width()
 
     def update(self):
-        self.x -= game_speed
+        # self.x -= game_speed
+        self.x -= modified_game_speed
         if self.x < -self.width:
             self.x = SCREEN_WIDTH + random.randint(2500, 3000)
             self.y = random.randint(50, 100)
@@ -147,7 +186,8 @@ class Obstacle:
         self.rect.x = SCREEN_WIDTH
 
     def update(self):
-        self.rect.x -= game_speed
+        # self.rect.x -= game_speed
+        self.rect.x -= modified_game_speed
         if self.rect.x < -self.rect.width:
             obstacles.pop()
 
@@ -188,11 +228,17 @@ class Bird(Obstacle):
 
 def main():
     global game_speed, x_pos_bg, y_pos_bg, points, obstacles
+    global modified_game_speed, smile_scores
     run = True
     clock = pygame.time.Clock()
     player = Dinosaur()
     cloud = Cloud()
-    game_speed = 20
+    game_speed = 10
+
+    smile_scores = np.array([1.00] * 10)
+    modified_game_speed = (2 - np.mean(smile_scores)) * game_speed
+    volume = 0.0
+    
     x_pos_bg = 0
     y_pos_bg = 380
     points = 0
@@ -206,9 +252,9 @@ def main():
         if points % 100 == 0:
             game_speed += 1
 
-        text = font.render('Points: ' + str(points), True, (0, 0, 0))
+        text = font.render('Points: ' + str(points) + ' Speed: ' + str(int(modified_game_speed)) + ' Volume: ' + f'{volume:4.2f}', True, (0, 0, 0))
         textRect = text.get_rect()
-        textRect.center = (1000, 40)
+        textRect.center = (920, 40)
         SCREEN.blit(text, textRect)
 
     def background():
@@ -219,44 +265,83 @@ def main():
         if x_pos_bg <= -image_width:
             SCREEN.blit(BG, (image_width + x_pos_bg, y_pos_bg))
             x_pos_bg = 0
-        x_pos_bg -= game_speed
+        # x_pos_bg -= game_speed
+        x_pos_bg -= modified_game_speed
 
-    while run:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                run = False
+    global q
+    q = queue.Queue(maxsize=100)
 
-        SCREEN.fill((255, 255, 255))
-        userInput = pygame.key.get_pressed()
+    stream = sd.InputStream(
+    device=1, channels=1,
+    samplerate=16000, callback=audio_callback,
+    blocksize=int(16000 / 100))
+        
+    with stream:
 
-        player.draw(SCREEN)
-        player.update(userInput)
+        while run:
 
-        if len(obstacles) == 0:
-            if random.randint(0, 2) == 0:
-                obstacles.append(SmallCactus(SMALL_CACTUS))
-            elif random.randint(0, 2) == 1:
-                obstacles.append(LargeCactus(LARGE_CACTUS))
-            elif random.randint(0, 2) == 2:
-                obstacles.append(Bird(BIRD))
+            custom_input = {'Up': False, 'Down': False}
 
-        for obstacle in obstacles:
-            obstacle.draw(SCREEN)
-            obstacle.update()
-            if player.dino_rect.colliderect(obstacle.rect):
-                pygame.time.delay(2000)
-                death_count += 1
-                menu(death_count)
+            buffer = [0.0]
+            while q.qsize():
+                buffer.append(q.get_nowait())
+            volume = max(buffer)
 
-        background()
+            if volume > 0.1:
+                custom_input['Up'] = True
 
-        cloud.draw(SCREEN)
-        cloud.update()
+            ret, frame = cap.read() # (720, 1280, 3)
+            resampled_frame = np.array(frame[::5, ::5, :]) # (140, 256, 3) # 24 FPS
+            emotions = detector.detect_emotions(resampled_frame)
 
-        score()
+            if len(emotions) > 0:
+                emotion = emotions[0]
+                emotion_d = emotion['emotions']
+                smile_scores = np.append(smile_scores, emotion_d['happy'])[-10:]
+                modified_game_speed = (2 - np.mean(smile_scores)) * game_speed
+            else:
+                custom_input['Down'] = True
 
-        clock.tick(30)
-        pygame.display.update()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    run = False
+
+            SCREEN.fill((255, 255, 255))
+            userInput = pygame.key.get_pressed()
+
+            player.draw(SCREEN)
+            # player.update(userInput)
+            player.update(custom_input)
+
+
+            DICE = 5
+            roll = random.randint(0, DICE)
+
+            if len(obstacles) == 0:
+                if roll == 0:
+                    obstacles.append(SmallCactus(SMALL_CACTUS))
+                elif roll == -1:
+                    obstacles.append(LargeCactus(LARGE_CACTUS))
+                elif roll == 2:
+                    obstacles.append(Bird(BIRD))
+
+            for obstacle in obstacles:
+                obstacle.draw(SCREEN)
+                obstacle.update()
+                if player.dino_rect.colliderect(obstacle.rect):
+                    pygame.time.delay(2000)
+                    death_count += 1
+                    menu(death_count)
+
+            background()
+
+            cloud.draw(SCREEN)
+            cloud.update()
+
+            score()
+
+            clock.tick(30)
+            pygame.display.update()
 
 
 def menu(death_count):
