@@ -7,6 +7,8 @@ import random
 import queue
 import sys
 
+from datetime import datetime
+
 import cv2
 import numpy as np
 from fer import FER
@@ -75,6 +77,7 @@ class Dinosaur:
 
     X_POS = 80
     Y_POS = 310
+    
     Y_POS_DUCK = 340
     JUMP_VEL = 8.5
 
@@ -93,6 +96,8 @@ class Dinosaur:
         self.dino_rect = self.image.get_rect()
         self.dino_rect.x = self.X_POS
         self.dino_rect.y = self.Y_POS
+
+        print(self.dino_rect)
 
     def update(self, customInput):
         if self.dino_duck:
@@ -278,6 +283,8 @@ def main():
         
     with stream:
 
+        start = datetime.now()
+
         while run:
 
             custom_input = {'Up': False, 'Down': False}
@@ -299,8 +306,9 @@ def main():
                 emotion_d = emotion['emotions']
                 smile_scores = np.append(smile_scores, emotion_d['happy'])[-10:]
                 modified_game_speed = (2 - np.mean(smile_scores)) * game_speed
-            else:
                 custom_input['Down'] = True
+            else:
+                custom_input['Down'] = False
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -317,13 +325,14 @@ def main():
             DICE = 5
             roll = random.randint(0, DICE)
 
-            if len(obstacles) == 0:
-                if roll == 0:
-                    obstacles.append(SmallCactus(SMALL_CACTUS))
-                elif roll == -1:
-                    obstacles.append(LargeCactus(LARGE_CACTUS))
-                elif roll == 2:
-                    obstacles.append(Bird(BIRD))
+            if (datetime.now() - start).total_seconds() > 15:
+                if len(obstacles) == 0:
+                    if roll == 0:
+                        obstacles.append(SmallCactus(SMALL_CACTUS))
+                    elif roll == -1:
+                        obstacles.append(LargeCactus(LARGE_CACTUS))
+                    elif roll == 2:
+                        obstacles.append(Bird(BIRD))
 
             for obstacle in obstacles:
                 obstacle.draw(SCREEN)
